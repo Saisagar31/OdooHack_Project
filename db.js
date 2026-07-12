@@ -155,7 +155,10 @@ const DB = {
 
     if (error) {
         console.error("Error updating vehicle:", error);
+        alert("Failed to update vehicle: " + (error.message || JSON.stringify(error)));
+        return false;
     }
+    return true;
   },
 
   async updateVehicleStatus(id, newStatus) {
@@ -166,7 +169,10 @@ const DB = {
 
     if (error) {
         console.error("Error updating status:", error);
+        alert("Failed to update status: " + (error.message || JSON.stringify(error)));
+        return false;
     }
+    return true;
   },
 
   async deleteVehicle(id) {
@@ -177,7 +183,10 @@ const DB = {
 
     if (error) {
         console.error("Error deleting vehicle:", error);
+        alert("Failed to delete vehicle: " + (error.message || JSON.stringify(error)));
+        return false;
     }
+    return true;
   },
 
   // Drivers
