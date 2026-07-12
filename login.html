@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Fleet Login</title>
+    <link rel="stylesheet" href="style.css">
+    <!-- Load Supabase -->
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+</head>
+<body style="display: flex; justify-content: center; align-items: center; min-height: 100vh; background-color: var(--bg-color);">
+    <div class="login-container glass-card" style="width: 100%; max-width: 400px; padding: 40px; text-align: center;">
+        <div style="display: flex; justify-content: center; margin-bottom: 20px;">
+            <i data-lucide="truck" style="width: 48px; height: 48px; color: var(--color-primary);"></i>
+        </div>
+        <h2 style="margin-bottom: 24px; font-family: var(--font-outfit);">TransitOps Login</h2>
+        
+        <form id="authForm" onsubmit="event.preventDefault(); handleLogin();">
+            <input type="email" id="email" class="form-control" placeholder="Email Address" style="margin-bottom: 16px;" required>
+            <input type="password" id="password" class="form-control" placeholder="Password" style="margin-bottom: 24px;" required>
+            <button type="submit" id="loginBtn" class="btn btn-primary" style="width: 100%; justify-content: center;">Sign In</button>
+        </form>
+        
+        <p id="errorMessage" style="color: var(--color-error); margin-top: 16px; display: none; font-size: 0.9rem; font-weight: bold;"></p>
+    </div>
+
+    <!-- Load your database config -->
+    <script src="db.js?v=7"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <script>
+        try {
+            lucide.createIcons();
+        } catch (e) {
+            console.error("Lucide failed to load", e);
+        }
+
+        async function handleLogin() {
+            try {
+                const email = document.getElementById('email').value;
+                const password = document.getElementById('password').value;
+                const errorElement = document.getElementById('errorMessage');
+                
+                if (!email || !password) {
+                    alert("Please enter both email and password.");
+                    return;
+                }
+                
+                if (typeof window.supabaseClient === 'undefined') {
+                    alert("CRITICAL ERROR: Supabase failed to initialize! Check if db.js has a syntax error (e.g. missing quotes around your API key) or if your internet is blocking the Supabase CDN.");
+                    return;
+                }
+
+                // Supabase auth function
+                const { data, error } = await window.supabaseClient.auth.signInWithPassword({
+                    email: email,
+                    password: password,
+                });
+
+                if (error) {
+                    alert("Login Failed: " + error.message);
+                    errorElement.innerText = error.message;
+                    errorElement.style.display = 'block';
+                } else {
+                    alert("Login Success! Redirecting to dashboard...");
+                    // Success! Redirect to the main dashboard
+                    window.location.href = 'index.html';
+                }
+            } catch (err) {
+                console.error(err);
+                alert("An unexpected error occurred inside handleLogin: " + err.message);
+            }
+        }
+    </script>
+</body>
+</html>

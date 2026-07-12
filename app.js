@@ -10,7 +10,7 @@ document.addEventListener("DOMContentLoaded", () => {
   let walkthroughStep = 0; // 0: Not started
 
   // DOM Elements
-  const authView = document.getElementById("auth-view");
+  // authView removed
   const appView = document.getElementById("app-view");
   const loginForm = document.getElementById("login-form");
   const loginEmailInput = document.getElementById("login-email");
@@ -35,55 +35,61 @@ document.addEventListener("DOMContentLoaded", () => {
   
   const toastContainer = document.getElementById("toast-container");
 
-  // Load active session from sessionStorage (for page persistence)
-  const savedUser = sessionStorage.getItem("transitops_user");
-  if (savedUser) {
+  // ==================== SUPABASE AUTHENTICATION & RBAC ====================
+  
+  async function checkAuth() {
     try {
-      currentUser = JSON.parse(savedUser);
-      initAppSession(currentUser);
-    } catch (e) {
-      sessionStorage.removeItem("transitops_user");
+        const { data: { session } } = await window.supabaseClient.auth.getSession();
+        if (!session) {
+            window.location.href = 'login.html';
+            return null;
+        }
+        return session.user;
+    } catch (err) {
+        console.error("checkAuth crashed:", err);
+        alert("checkAuth crashed: " + err.message);
+        window.location.href = 'login.html';
+        return null;
     }
   }
 
-  // ==================== AUTHENTICATION & RBAC ====================
-
-  loginForm.addEventListener("submit", (e) => {
-    e.preventDefault();
-    const email = loginEmailInput.value;
-    const password = loginPasswordInput.value;
-    
+  async function initializeApp() {
     try {
-      const user = window.TransitOpsDB.login(email, password);
-      sessionStorage.setItem("transitops_user", JSON.stringify(user));
-      currentUser = user;
-      initAppSession(currentUser);
-      showToast(`Welcome back, ${user.name}!`, "success");
+        const authUser = await checkAuth();
+        if (!authUser) return;
+
+        // Fetch their role from custom Users table
+        const { data: userRecord, error } = await window.supabaseClient
+            .from('Users')
+            .select('role, name')
+            .eq('auth_id', authUser.id)
+            .single();
+
+        if (error || !userRecord) {
+            console.error("Could not find user role in database. Fallback used.");
+            currentUser = { id: authUser.id, name: authUser.email.split('@')[0], role: "fleet_manager", email: authUser.email };
+        } else {
+            currentUser = { id: authUser.id, name: userRecord.name, role: userRecord.role, email: authUser.email };
+        }
+        
+        initAppSession(currentUser);
     } catch (err) {
-      showToast(err.message, "error");
+        console.error("initializeApp crashed:", err);
+        alert("initializeApp crashed: " + err.message);
     }
-  });
+  }
 
-  // Quick Role Logins
-  quickRoleButtons.forEach(btn => {
-    btn.addEventListener("click", () => {
-      const email = btn.getAttribute("data-email");
-      loginEmailInput.value = email;
-      loginPasswordInput.value = "password123";
-      loginForm.dispatchEvent(new Event("submit"));
-    });
-  });
+  // Start the app sequence
+  initializeApp();
 
-  btnLogout.addEventListener("click", () => {
-    sessionStorage.removeItem("transitops_user");
+  btnLogout.addEventListener("click", async () => {
+    await window.supabaseClient.auth.signOut();
     currentUser = null;
-    appView.style.display = "none";
-    authView.style.display = "flex";
-    showToast("Signed out successfully.", "success");
+    window.location.href = 'login.html';
   });
 
   function initAppSession(user) {
-    authView.style.display = "none";
+    // authView.style.display = "none";
     appView.style.display = "grid";
 
     // Setup profile view
@@ -364,8 +370,8 @@ document.addEventListener("DOMContentLoaded", () => {
     document.getElementById("kpi-utilization").textContent = `${kpis.fleetUtilization}%`;
   }
 
-  function renderDashboardCharts() {
-    const vehicles = window.TransitOpsDB.getVehicles();
+  async function renderDashboardCharts() {
+    const vehicles = await window.TransitOpsDB.getVehicles();
     const typeFilter = document.getElementById("dash-filter-type").value;
     const regionFilter = document.getElementById("dash-filter-region").value;
 
@@ -492,14 +498,16 @@ document.addEventListener("DOMContentLoaded", () => {
   const vehicleModal = document.getElementById("vehicle-modal");
   const btnAddVehicle = document.getElementById("btn-add-vehicle");
 
-  function renderVehiclesTable() {
-    const vehicles = window.TransitOpsDB.getVehicles();
+  async function renderVehiclesTable() {
+    const vehicles = await window.TransitOpsDB.getVehicles();
     const searchVal = vehicleSearch.value.toLowerCase();
     const typeVal = vehicleFilterType.value;
     const statusVal = vehicleFilterStatus.value;
 
     let filtered = vehicles.filter(v => {
-      const matchSearch = v.id.toLowerCase().includes(searchVal) || v.name.toLowerCase().includes(searchVal);
+      const vId = (v.id || '').toString().toLowerCase();
+      const vName = (v.name || '').toString().toLowerCase();
+      const matchSearch = vId.includes(searchVal) || vName.includes(searchVal);
       const matchType = typeVal === "All" || v.type === typeVal;
       const matchStatus = statusVal === "All" || v.status === statusVal;
       return matchSearch && matchType && matchStatus;
@@ -567,12 +575,12 @@ document.addEventListener("DOMContentLoaded", () => {
     });
 
     vehicleTableBody.querySelectorAll(".delete-vehicle-btn").forEach(btn => {
-      btn.addEventListener("click", () => {
+      btn.addEventListener("click", async () => {
         if (!checkRBACAction(["fleet_manager"], "delete vehicles")) return;
         const vId = btn.getAttribute("data-id");
         if (confirm(`Are you sure you want to delete vehicle ${vId}?`)) {
           try {
-            window.TransitOpsDB.deleteVehicle(vId);
+            await window.TransitOpsDB.deleteVehicle(vId);
             showToast(`Vehicle ${vId} deleted.`, "success");
             renderVehiclesTable();
           } catch (err) {
@@ -596,7 +604,55 @@ document.addEventListener("DOMContentLoaded", () => {
     openModal("vehicle-modal");
   });
 
-  vehicleForm.addEventListener("submit", (e) => {
+  function validateVehicleForm(formData) {
+    const errors = [];
+
+    // 1. Check for empty required fields
+    if (!formData.id || !formData.name || !formData.max_load) {
+        errors.push("All mandatory fields must be filled out.");
+    }
+
+    // 2. Validate Numbers (No negative values for capacity or odometer)
+    if (parseFloat(formData.max_load) <= 0) {
+        errors.push("Max load capacity must be greater than zero.");
+    }
+    
+    if (parseFloat(formData.odometer) < 0) {
+        errors.push("Odometer reading cannot be negative.");
+    }
+
+    // 3. Validate Registration Format (Example: Must be alphanumeric and at least 5 chars)
+    // Adjusted to 3-15 chars for realistic examples like VAN-05
+    const regRegex = /^[A-Z0-9-]{3,15}$/i;
+    if (!regRegex.test(formData.id)) {
+        errors.push("Invalid Registration Number format.");
+    }
+
+    return errors;
+  }
+
+  async function uploadVehicleDocument(file, vehicleRegNumber) {
+    const fileExt = file.name.split('.').pop();
+    const fileName = `${vehicleRegNumber}-RC.${fileExt}`;
+    // Upload to Supabase Storage
+    const { data, error } = await window.supabaseClient.storage
+        .from('vehicle-documents')
+        .upload(fileName, file);
+
+    if (error) {
+        console.error("Upload failed:", error);
+        return null;
+    }
+
+    // Get the public URL to save in your database
+    const { data: urlData } = window.supabaseClient.storage
+        .from('vehicle-documents')
+        .getPublicUrl(fileName);
+
+    return urlData.publicUrl;
+  }
+
+  vehicleForm.addEventListener("submit", async (e) => {
     e.preventDefault();
     const isEdit = document.getElementById("vehicle-edit-mode").value === "true";
     
@@ -608,12 +664,30 @@ document.addEventListener("DOMContentLoaded", () => {
     const acquisition_cost = document.getElementById("veh-cost").value;
     const status = document.getElementById("veh-status").value;
 
+    const vehicleData = { id, name, type, max_load, odometer, acquisition_cost, status };
+    
+    // Run the validation
+    const validationErrors = validateVehicleForm(vehicleData);
+    if (validationErrors.length > 0) {
+        showToast(validationErrors.join('\n'), "error");
+        return; 
+    }
+
+    // Handle File Upload
+    const rcFileInput = document.getElementById("rcDocument");
+    if (rcFileInput && rcFileInput.files.length > 0) {
+        const fileUrl = await uploadVehicleDocument(rcFileInput.files[0], id);
+        if (fileUrl) {
+            vehicleData.rc_document_url = fileUrl; // Add to database payload
+        }
+    }
+
     try {
       if (isEdit) {
-        window.TransitOpsDB.updateVehicle(id, { name, type, max_load, odometer, acquisition_cost, status });
+        await window.TransitOpsDB.updateVehicle(id, vehicleData);
         showToast(`Vehicle ${id} updated successfully.`, "success");
       } else {
-        window.TransitOpsDB.addVehicle({ id, name, type, max_load, odometer, acquisition_cost, status });
+        await window.TransitOpsDB.addVehicle(vehicleData);
         showToast(`Vehicle ${id.toUpperCase()} registered successfully.`, "success");
       }
       closeModal("vehicle-modal");
@@ -795,11 +869,11 @@ document.addEventListener("DOMContentLoaded", () => {
   const completeTripModal = document.getElementById("complete-trip-modal");
   const completeTripForm = document.getElementById("complete-trip-form");
 
-  function renderTripsTable() {
+  async function renderTripsTable() {
     const trips = window.TransitOpsDB.getTrips();
     const searchVal = tripSearch.value.toLowerCase();
     const statusVal = tripFilterStatus.value;
-    const vehicles = window.TransitOpsDB.getVehicles();
+    const vehicles = await window.TransitOpsDB.getVehicles();
     const drivers = window.TransitOpsDB.getDrivers();
 
     let filtered = trips.filter(t => {
@@ -917,10 +991,10 @@ document.addEventListener("DOMContentLoaded", () => {
   tripFilterStatus.addEventListener("change", renderTripsTable);
 
   // Populate Add Trip Dropdowns on modal open
-  btnAddTrip.addEventListener("click", () => {
+  btnAddTrip.addEventListener("click", async () => {
     if (!checkRBACAction(["fleet_manager", "driver"], "create trips")) return;
     
-    const vehicles = window.TransitOpsDB.getVehicles();
+    const vehicles = await window.TransitOpsDB.getVehicles();
     const drivers = window.TransitOpsDB.getDrivers();
     const today = new Date().toISOString().split('T')[0];
 
@@ -1048,11 +1122,11 @@ document.addEventListener("DOMContentLoaded", () => {
 
   maintenanceSearch.addEventListener("input", renderMaintenanceTable);
 
-  btnAddMaintenance.addEventListener("click", () => {
+  btnAddMaintenance.addEventListener("click", async () => {
     if (!checkRBACAction(["fleet_manager"], "log maintenance")) return;
     
     // Populate vehicles dropdown (exclude Retired and On Trip)
-    const vehicles = window.TransitOpsDB.getVehicles();
+    const vehicles = await window.TransitOpsDB.getVehicles();
     const fitVehicles = vehicles.filter(v => v.status !== "Retired" && v.status !== "On Trip");
     const mntVehicleSelect = document.getElementById("mnt-vehicle");
 
@@ -1158,10 +1232,10 @@ document.addEventListener("DOMContentLoaded", () => {
   expenseSearch.addEventListener("input", renderExpensesTable);
   expenseFilterType.addEventListener("change", renderExpensesTable);
 
-  btnAddExpense.addEventListener("click", () => {
+  btnAddExpense.addEventListener("click", async () => {
     if (!checkRBACAction(["fleet_manager", "financial_analyst"], "record expenses")) return;
 
-    const vehicles = window.TransitOpsDB.getVehicles();
+    const vehicles = await window.TransitOpsDB.getVehicles();
     const trips = window.TransitOpsDB.getTrips();
 
     const expVeh = document.getElementById("exp-vehicle");
@@ -1209,8 +1283,8 @@ document.addEventListener("DOMContentLoaded", () => {
   const btnExportCSV = document.getElementById("btn-export-csv");
   const btnExportPDF = document.getElementById("btn-export-pdf");
 
-  function renderReportsView() {
-    const vehicles = window.TransitOpsDB.getVehicles();
+  async function renderReportsView() {
+    const vehicles = await window.TransitOpsDB.getVehicles();
     const trips = window.TransitOpsDB.getTrips();
     const expenses = window.TransitOpsDB.getFuelExpenses();
 
@@ -1278,8 +1352,8 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   // Export CSV Action
-  btnExportCSV.addEventListener("click", () => {
-    const vehicles = window.TransitOpsDB.getVehicles();
+  btnExportCSV.addEventListener("click", async () => {
+    const vehicles = await window.TransitOpsDB.getVehicles();
     const trips = window.TransitOpsDB.getTrips();
 
     let csvContent = "data:text/csv;charset=utf-8,";
@@ -1333,7 +1407,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const docEntitySelectId = document.getElementById("doc-entity-id");
   const simulatedDocsContainer = document.getElementById("simulated-docs-container");
 
-  function openDocumentManager(entityType, entityId) {
+  async function openDocumentManager(entityType, entityId) {
     docEntitySelectType.value = entityType;
     docEntitySelectId.value = entityId;
     docModalTitle.textContent = `Documents: ${entityId} (${entityType.toUpperCase()})`;
@@ -1342,10 +1416,11 @@ document.addEventListener("DOMContentLoaded", () => {
     openModal("document-modal");
   }
 
-  function renderDocumentsList(type, id) {
+  async function renderDocumentsList(type, id) {
     let docs = [];
     if (type === "vehicle") {
-      const v = window.TransitOpsDB.getVehicles().find(v => v.id === id);
+      const vehiclesList = await window.TransitOpsDB.getVehicles();
+      const v = vehiclesList.find(v => v.id === id);
       docs = v ? v.documents : [];
     } else {
       const d = window.TransitOpsDB.getDrivers().find(d => d.id === id);
@@ -1381,14 +1456,15 @@ document.addEventListener("DOMContentLoaded", () => {
 
     // Hook deletes
     simulatedDocsContainer.querySelectorAll(".delete-mock-doc").forEach(btn => {
-      btn.addEventListener("click", () => {
+      btn.addEventListener("click", async () => {
         if (!checkRBACAction(["fleet_manager", "safety_officer"], "manage compliance documents")) return;
         const idx = parseInt(btn.getAttribute("data-idx"));
         try {
           if (type === "vehicle") {
-            const v = window.TransitOpsDB.getVehicles().find(veh => veh.id === id);
+            const vehiclesList = await window.TransitOpsDB.getVehicles();
+            const v = vehiclesList.find(veh => veh.id === id);
             v.documents.splice(idx, 1);
-            window.TransitOpsDB.updateVehicle(id, { documents: v.documents });
+            await window.TransitOpsDB.updateVehicle(id, { documents: v.documents });
           } else {
             const d = window.TransitOpsDB.getDrivers().find(drv => drv.id === id);
             d.documents.splice(idx, 1);
@@ -1405,7 +1481,7 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
-  docUploadForm.addEventListener("submit", (e) => {
+  docUploadForm.addEventListener("submit", async (e) => {
     e.preventDefault();
     if (!checkRBACAction(["fleet_manager", "safety_officer"], "upload compliance documents")) return;
     
@@ -1415,10 +1491,11 @@ document.addEventListener("DOMContentLoaded", () => {
 
     try {
       if (type === "vehicle") {
-        const v = window.TransitOpsDB.getVehicles().find(veh => veh.id === id);
+        const vehiclesList = await window.TransitOpsDB.getVehicles();
+        const v = vehiclesList.find(veh => veh.id === id);
         const docs = v.documents || [];
         docs.push(docName);
-        window.TransitOpsDB.updateVehicle(id, { documents: docs });
+        await window.TransitOpsDB.updateVehicle(id, { documents: docs });
         renderVehiclesTable();
       } else {
         const d = window.TransitOpsDB.getDrivers().find(drv => drv.id === id);
@@ -1473,7 +1550,7 @@ document.addEventListener("DOMContentLoaded", () => {
         walkthroughLog.textContent = "Step 1: Registering vehicle 'Van-05'...";
         await sleep(1000);
         
-        window.TransitOpsDB.addVehicle({
+        await window.TransitOpsDB.addVehicle({
           id: "Van-05",
           name: "Chevrolet Express Cargo",
           type: "Van",
@@ -1552,7 +1629,8 @@ document.addEventListener("DOMContentLoaded", () => {
           window.TransitOpsDB.dispatchTrip(trip.id);
           
           // Verify status
-          const vehicle = window.TransitOpsDB.getVehicles().find(v => v.id === "VAN-05");
+          const vehiclesList = await window.TransitOpsDB.getVehicles();
+    const vehicle = vehiclesList.find(v => v.id === "VAN-05");
           const driver = window.TransitOpsDB.getDrivers().find(d => d.id === "DL-ALEX99");
 
           updateStepUI("step-4-5", "completed");
@@ -1577,7 +1655,8 @@ document.addEventListener("DOMContentLoaded", () => {
           // Completed with 12060 odo and 12 Liters of fuel
           window.TransitOpsDB.completeTrip(trip.id, 12060, 12);
           
-          const vehicle = window.TransitOpsDB.getVehicles().find(v => v.id === "VAN-05");
+          const vehiclesList = await window.TransitOpsDB.getVehicles();
+    const vehicle = vehiclesList.find(v => v.id === "VAN-05");
           const driver = window.TransitOpsDB.getDrivers().find(d => d.id === "DL-ALEX99");
 
           updateStepUI("step-6-7", "completed");
@@ -1602,7 +1681,8 @@ document.addEventListener("DOMContentLoaded", () => {
           date: new Date().toISOString().split('T')[0]
         });
 
-        const vehicle = window.TransitOpsDB.getVehicles().find(v => v.id === "VAN-05");
+        const vehiclesList = await window.TransitOpsDB.getVehicles();
+    const vehicle = vehiclesList.find(v => v.id === "VAN-05");
 
         updateStepUI("step-8", "completed");
         walkthroughLog.textContent = `SUCCESS: Maintenance logged. Van-05 status set to '${vehicle.status}'. It is hidden from dispatch select lists.`;

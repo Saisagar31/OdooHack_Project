@@ -1,6 +1,12 @@
 // TransitOps Database and Business Logic Layer
 // Persisted in localStorage
 
+const SUPABASE_URL = 'https://letjbkmoofjhvsivfqgl.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_sBfyPwTOZuyHKDY2h5-fsg_VGPygGRv';
+
+// Initialize the client explicitly on window to avoid scope issues
+window.supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
 const DB_KEY = 'transitops_db_state';
 
 // Default Seed Data
@@ -81,56 +87,97 @@ const DB = {
   },
 
   // Vehicles
-  getVehicles() {
-    return db.vehicles;
+  async getVehicles() {
+    const { data, error } = await window.supabaseClient
+        .from('vehicles')
+        .select('*')
+        .order('registration_number', { ascending: false }); // Newest first
+
+    if (error) {
+        console.error("Error fetching vehicles:", error);
+        alert("Failed to load vehicles: " + (error.message || error.details || JSON.stringify(error)));
+        return [];
+    }
+    
+    // Map Supabase columns to App keys
+    return data.map(v => ({
+        id: v.registration_number,
+        name: v.vehicle_name,
+        type: v.vehicle_type,
+        max_load: v.max_load_capacity,
+        odometer: v.odometer,
+        acquisition_cost: v.acquisition_cost,
+        status: v.status,
+        rc_document_url: v.rc_document_url
+    }));
   },
   
-  addVehicle(vehicle) {
-    // Rule: Vehicle Registration must be unique
-    const exists = db.vehicles.some(v => v.id.toUpperCase() === vehicle.id.toUpperCase());
-    if (exists) throw new Error(`Vehicle with registration number ${vehicle.id} already exists.`);
-    
-    const newVehicle = {
-      id: vehicle.id.toUpperCase().trim(),
-      name: vehicle.name.trim(),
-      type: vehicle.type,
-      max_load: Number(vehicle.max_load),
-      odometer: Number(vehicle.odometer),
-      acquisition_cost: Number(vehicle.acquisition_cost),
-      status: vehicle.status || 'Available',
-      documents: vehicle.documents || []
+  async addVehicle(newVehicleData) {
+    // Map App keys to Supabase columns
+    const payload = {
+        registration_number: newVehicleData.id,
+        vehicle_name: newVehicleData.name,
+        vehicle_type: newVehicleData.type,
+        max_load_capacity: newVehicleData.max_load,
+        odometer: newVehicleData.odometer,
+        acquisition_cost: newVehicleData.acquisition_cost,
+        status: newVehicleData.status,
+        rc_document_url: newVehicleData.rc_document_url || null
     };
-    db.vehicles.push(newVehicle);
-    saveDB(db);
-    return newVehicle;
+
+    const { data, error } = await window.supabaseClient
+        .from('vehicles')
+        .insert([payload]); 
+
+    if (error) {
+        alert("Failed to add vehicle: " + (error.message || error.details || JSON.stringify(error)));
+        console.error(error);
+        return false;
+    }
+    return true;
   },
 
-  updateVehicle(id, updatedFields) {
-    const idx = db.vehicles.findIndex(v => v.id === id);
-    if (idx === -1) throw new Error("Vehicle not found.");
-    
-    // Merge updates
-    db.vehicles[idx] = {
-      ...db.vehicles[idx],
-      name: updatedFields.name !== undefined ? updatedFields.name.trim() : db.vehicles[idx].name,
-      type: updatedFields.type !== undefined ? updatedFields.type : db.vehicles[idx].type,
-      max_load: updatedFields.max_load !== undefined ? Number(updatedFields.max_load) : db.vehicles[idx].max_load,
-      odometer: updatedFields.odometer !== undefined ? Number(updatedFields.odometer) : db.vehicles[idx].odometer,
-      acquisition_cost: updatedFields.acquisition_cost !== undefined ? Number(updatedFields.acquisition_cost) : db.vehicles[idx].acquisition_cost,
-      status: updatedFields.status !== undefined ? updatedFields.status : db.vehicles[idx].status,
-      documents: updatedFields.documents !== undefined ? updatedFields.documents : db.vehicles[idx].documents
-    };
-    saveDB(db);
-    return db.vehicles[idx];
+  async updateVehicle(id, updatedFields) {
+    // Map App keys to Supabase columns for update
+    const payload = {};
+    if (updatedFields.name !== undefined) payload.vehicle_name = updatedFields.name;
+    if (updatedFields.type !== undefined) payload.vehicle_type = updatedFields.type;
+    if (updatedFields.max_load !== undefined) payload.max_load_capacity = updatedFields.max_load;
+    if (updatedFields.odometer !== undefined) payload.odometer = updatedFields.odometer;
+    if (updatedFields.acquisition_cost !== undefined) payload.acquisition_cost = updatedFields.acquisition_cost;
+    if (updatedFields.status !== undefined) payload.status = updatedFields.status;
+    if (updatedFields.rc_document_url !== undefined) payload.rc_document_url = updatedFields.rc_document_url;
+
+    const { error } = await window.supabaseClient
+        .from('vehicles')
+        .update(payload)
+        .eq('registration_number', id);
+
+    if (error) {
+        console.error("Error updating vehicle:", error);
+    }
   },
 
-  deleteVehicle(id) {
-    // Ensure not assigned to any active trip
-    const activeTrip = db.trips.some(t => t.vehicle_id === id && t.status === 'Dispatched');
-    if (activeTrip) throw new Error("Cannot delete a vehicle currently on an active trip.");
-    
-    db.vehicles = db.vehicles.filter(v => v.id !== id);
-    saveDB(db);
+  async updateVehicleStatus(id, newStatus) {
+    const { error } = await window.supabaseClient
+        .from('vehicles')
+        .update({ status: newStatus })
+        .eq('registration_number', id);
+
+    if (error) {
+        console.error("Error updating status:", error);
+    }
+  },
+
+  async deleteVehicle(id) {
+    const { error } = await window.supabaseClient
+        .from('vehicles')
+        .delete()
+        .eq('registration_number', id);
+
+    if (error) {
+        console.error("Error deleting vehicle:", error);
+    }
   },
 
   // Drivers
